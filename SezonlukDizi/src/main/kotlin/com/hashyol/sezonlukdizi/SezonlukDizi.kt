@@ -1,6 +1,7 @@
 package com.hashyol.sezonlukdizi
 
 import android.util.Log
+import kotlinx.coroutines.delay
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -12,8 +13,12 @@ class SezonlukDizi : MainAPI() {
     override var name                 = "SezonlukDizi"
     override val hasMainPage          = true
     override var lang                 = "tr"
-    override val hasQuickSearch       = false
+    override val hasQuickSearch       = true
     override val supportedTypes       = setOf(TvType.TvSeries)
+
+    companion object {
+        private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
 
     override val mainPage = mainPageOf(
         "${mainUrl}/diziler.asp?siralama_tipi=id&s="          to "Son Eklenenler",
@@ -30,14 +35,30 @@ class SezonlukDizi : MainAPI() {
         val document = app.get(
             "${request.data}${page}",
             headers = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent" to USER_AGENT,
                 "Referer" to "${mainUrl}/"
             )
         ).document
 
-        val home = document.select("a.column, div.afis a, div.ui.card a, a[href*='/diziler/']").mapNotNull {
-            it.toSearchResult()
-        }.distinctBy { it.url }
+        val seriesElements = document.select("a.column[href*='/diziler/'], div.afis a[href*='/diziler/']")
+        val home = if (seriesElements.isNotEmpty()) {
+            seriesElements.mapNotNull { it.toSearchResult() }.distinctBy { it.url }
+        } else {
+            // Homepage card fallback: convert episode card link to series page link
+            document.select("div.ui.card.golgever a.image, div.ui.card a[href*='bolum']").mapNotNull { card ->
+                val title = card.selectFirst("span.title")?.text()?.trim()
+                    ?: card.selectFirst("img")?.attr("alt")?.substringBefore(".Bölüm")?.substringBefore(".Sezon")?.trim()
+                    ?: return@mapNotNull null
+                val epHref = card.attr("href")
+                val slug = epHref.trim('/').split('/').firstOrNull() ?: return@mapNotNull null
+                val seriesHref = fixUrl("/diziler/$slug.html")
+                val posterUrl = fixUrlNull(card.selectFirst("img")?.attr("src"))
+
+                newTvSeriesSearchResponse(title, seriesHref, TvType.TvSeries) {
+                    this.posterUrl = posterUrl
+                }
+            }.distinctBy { it.url }
+        }
 
         return newHomePageResponse(request.name, home)
     }
@@ -49,9 +70,13 @@ class SezonlukDizi : MainAPI() {
             ?: this.attr("title").removeSuffix(" izle").trim().ifEmpty { null }
             ?: return null
 
-        val href = fixUrlNull(this.attr("href")) ?: return null
-        // Skip links that aren't series pages
-        if (!href.contains("/diziler/") && !href.contains(".html")) return null
+        val rawHref = this.attr("href")
+        val href = if (!rawHref.contains("/diziler/") && rawHref.contains("bolum")) {
+            val slug = rawHref.trim('/').split('/').firstOrNull() ?: return null
+            fixUrl("/diziler/$slug.html")
+        } else {
+            fixUrlNull(rawHref) ?: return null
+        }
 
         val posterUrl = fixUrlNull(
             this.selectFirst("img")?.attr("data-src")?.ifEmpty { null }
@@ -64,29 +89,68 @@ class SezonlukDizi : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val document = app.get(
-            "${mainUrl}/diziler.asp?adi=${query}",
-            headers = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer" to "${mainUrl}/"
-            )
-        ).document
+        val searchRoot = try {
+            app.post(
+                "${mainUrl}/ajax/arama.asp",
+                headers = mapOf(
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "${mainUrl}/"
+                ),
+                data = mapOf("q" to query)
+            ).parsedSafe<SearchRoot>()
+        } catch (e: Exception) {
+            Log.e("SezonlukDizi", "Search error: ${e.message}")
+            null
+        }
 
-        return document.select("a.column, div.afis a, div.ui.card a, a[href*='/diziler/']").mapNotNull {
-            it.toSearchResult()
-        }.distinctBy { it.url }
+        val results = searchRoot?.results?.diziler?.results ?: emptyList()
+
+        return results.mapNotNull { item ->
+            val title = item.title ?: return@mapNotNull null
+            val url = fixUrlNull(item.url) ?: return@mapNotNull null
+            val posterUrl = fixUrlNull(item.image)
+
+            newTvSeriesSearchResponse(title, url, TvType.TvSeries) {
+                this.posterUrl = posterUrl
+            }
+        }
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse> = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(
-            url,
+        val actualUrl = fixUrl(url)
+        val initialDoc = app.get(
+            actualUrl,
             headers = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent" to USER_AGENT,
                 "Referer" to "${mainUrl}/"
             )
         ).document
+
+        // If an episode page was opened directly, resolve to the full series page
+        val (document, seriesUrl) = if (!actualUrl.contains("/diziler/")) {
+            val seriesHref = initialDoc.selectFirst("a[href*='/diziler/']")?.attr("href")
+            if (seriesHref != null) {
+                val fullSeriesUrl = fixUrl(seriesHref)
+                try {
+                    app.get(
+                        fullSeriesUrl,
+                        headers = mapOf(
+                            "User-Agent" to USER_AGENT,
+                            "Referer" to "${mainUrl}/"
+                        )
+                    ).document to fullSeriesUrl
+                } catch (e: Exception) {
+                    initialDoc to actualUrl
+                }
+            } else {
+                initialDoc to actualUrl
+            }
+        } else {
+            initialDoc to actualUrl
+        }
 
         val title = document.selectFirst("div.header")?.text()?.trim()
             ?: document.selectFirst("h1")?.text()?.trim()
@@ -104,14 +168,14 @@ class SezonlukDizi : MainAPI() {
         val rating = document.selectFirst("div.dizipuani a div, .dizipuani")?.text()?.trim()?.replace(",", ".")
         val duration = document.selectXpath("//span[contains(text(), 'Dk.')]").text().trim().substringBefore(" Dk.").toIntOrNull()
 
-        val endpoint = url.split("/").last()
+        val endpoint = seriesUrl.split("/").last()
 
         val actorsReq = try {
             app.get(
                 "${mainUrl}/oyuncular/${endpoint}",
                 headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Referer" to url
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to seriesUrl
                 )
             ).document
         } catch (e: Exception) {
@@ -130,8 +194,8 @@ class SezonlukDizi : MainAPI() {
             val episodesReq = app.get(
                 "${mainUrl}/bolumler/${endpoint}",
                 headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Referer" to url
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to seriesUrl
                 )
             ).document
 
@@ -154,7 +218,7 @@ class SezonlukDizi : MainAPI() {
             Log.e("SezonlukDizi", "Error loading episodes: ${e.message}")
         }
 
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        return newTvSeriesLoadResponse(title, seriesUrl, TvType.TvSeries, episodes) {
             this.posterUrl = poster
             this.year = year
             this.plot = description
@@ -181,13 +245,15 @@ class SezonlukDizi : MainAPI() {
         val document = app.get(
             pageUrl,
             headers = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "User-Agent" to USER_AGENT,
                 "Referer" to "${mainUrl}/"
             )
         ).document
 
         val aspData = getAspData()
-        val bid = document.selectFirst("div#dilsec")?.attr("data-id") ?: return false
+        val bid = document.selectFirst("div#dilsec")?.attr("data-id")
+            ?: Regex("""data-id=["'](\d+)["']""").find(document.html())?.groupValues?.get(1)
+            ?: return false
         Log.d("SezonlukDizi", "bid -> $bid")
 
         // 1 = Altyazı, 0 = Dublaj
@@ -195,11 +261,12 @@ class SezonlukDizi : MainAPI() {
 
         for ((dilCode, dilName) in languages) {
             try {
+                delay(150)
                 val alternatifResponse = app.post(
                     "${mainUrl}/ajax/dataAlternatif${aspData.alternatif}.asp",
                     headers = mapOf(
                         "X-Requested-With" to "XMLHttpRequest",
-                        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        "User-Agent" to USER_AGENT,
                         "Referer" to pageUrl
                     ),
                     data = mapOf(
@@ -212,12 +279,16 @@ class SezonlukDizi : MainAPI() {
                     val veriId = veri.id ?: return@forEach
                     val veriBaslik = veri.baslik ?: "Alternatif"
 
+                    // Skip internal captcha-protected player
+                    if (veriBaslik.contains("Pixel", ignoreCase = true)) return@forEach
+
                     try {
+                        delay(150)
                         val veriResponse = app.post(
                             "${mainUrl}/ajax/dataEmbed${aspData.embed}.asp",
                             headers = mapOf(
                                 "X-Requested-With" to "XMLHttpRequest",
-                                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                "User-Agent" to USER_AGENT,
                                 "Referer" to pageUrl
                             ),
                             data = mapOf("id" to "$veriId")
@@ -226,22 +297,23 @@ class SezonlukDizi : MainAPI() {
                         val iframeSrc = veriResponse.selectFirst("iframe")?.attr("src") ?: return@forEach
                         if (iframeSrc.contains("reCAPTCHA", ignoreCase = true)) return@forEach
 
-                        val iframe = fixUrl(iframeSrc)
+                        var iframe = fixUrl(iframeSrc)
+                        if (iframe.startsWith("//")) {
+                            iframe = "https:$iframe"
+                        }
                         Log.d("SezonlukDizi", "$dilName | $veriBaslik -> $iframe")
 
-                        loadExtractor(iframe, "${mainUrl}/", subtitleCallback) { link ->
-                            callback.invoke(
-                                ExtractorLink(
-                                    source = "$dilName - $veriBaslik",
-                                    name = "$dilName - $veriBaslik",
-                                    url = link.url,
-                                    referer = link.referer,
-                                    quality = link.quality,
-                                    headers = link.headers,
-                                    extractorData = link.extractorData,
-                                    type = link.type
-                                )
-                            )
+                        if (iframe.contains("odnoklassniki.ru")) {
+                            val okUrl = iframe.replace("odnoklassniki.ru", "ok.ru")
+                            loadExtractor(okUrl, subtitleCallback, callback)
+                        } else if (iframe.contains("bysejikuar.com") || iframe.contains("byse")) {
+                            loadExtractor(iframe, subtitleCallback, callback)
+                            val filemoonUrl = iframe.replace(Regex("""https://[^/]+/(e|d)/"""), "https://filemoon.sx/e/")
+                            if (filemoonUrl != iframe) {
+                                loadExtractor(filemoonUrl, subtitleCallback, callback)
+                            }
+                        } else {
+                            loadExtractor(iframe, subtitleCallback, callback)
                         }
                     } catch (e: Exception) {
                         Log.e("SezonlukDizi", "Error parsing embed $veriId: ${e.message}")
@@ -260,7 +332,7 @@ class SezonlukDizi : MainAPI() {
             val js = app.get(
                 "${this.mainUrl}/js/site.min.js",
                 headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "User-Agent" to USER_AGENT,
                     "Referer" to "${mainUrl}/"
                 )
             ).text

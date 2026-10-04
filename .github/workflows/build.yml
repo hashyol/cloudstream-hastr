@@ -58,6 +58,7 @@ jobs:
           ./gradlew make makePluginsJson
           cp -f **/build/*.cs3 $GITHUB_WORKSPACE/builds/
           cp -f build/plugins.json $GITHUB_WORKSPACE/builds/
+          sed -i 's|https://raw.githubusercontent.com/hashyol/cloudstream-hastr/builds/|https://cdn.jsdelivr.net/gh/hashyol/cloudstream-hastr@builds/|g' $GITHUB_WORKSPACE/builds/plugins.json
 
       - name: Push Builds
         run: |
@@ -68,3 +69,6 @@ jobs:
           git add .
           git commit -m "Derleme: $GITHUB_SHA" || exit 0
           git push --force origin builds
+          curl -s https://purge.jsdelivr.net/gh/hashyol/cloudstream-hastr@builds/plugins.json || true
+          curl -s https://purge.jsdelivr.net/gh/hashyol/cloudstream-hastr@builds/SezonlukDizi.cs3 || true
+          curl -s https://purge.jsdelivr.net/gh/hashyol/cloudstream-hastr@master/repo.json || true

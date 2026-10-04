@@ -3,6 +3,6 @@
     "description": "SezonlukDizi özel eklentisi",
     "manifestVersion": 1,
     "pluginLists": [
-        "https://raw.githubusercontent.com/hashyol/cloudstream-hastr/builds/plugins.json"
+        "https://cdn.jsdelivr.net/gh/hashyol/cloudstream-hastr@builds/plugins.json"
     ]
 }

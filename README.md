@@ -13,7 +13,7 @@ GitHub deponuzu oluşturup kodları yükledikten sonra CloudStream uygulamasınd
 3. **Depo Ekle (Add Repository)** butonuna tıklayın.
 4. Aşağıdaki bilgileri girin:
    - **Depo Adı:** `hashyol`
-   - **Depo URL:** `https://raw.githubusercontent.com/hashyol/cloudstream-hastr/master/repo.json`
+   - **Depo URL:** `https://cdn.jsdelivr.net/gh/hashyol/cloudstream-hastr@master/repo.json`
 5. Kaydettikten sonra açılan listeden **SezonlukDizi** eklentisini indirip kurun.
 
 ---

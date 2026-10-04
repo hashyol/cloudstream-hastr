@@ -1,0 +1,8 @@
+{
+    "name": "hashyol Deposu",
+    "description": "SezonlukDizi özel eklentisi",
+    "manifestVersion": 1,
+    "pluginLists": [
+        "https://raw.githubusercontent.com/hashyol/cloudstream-hastr/builds/plugins.json"
+    ]
+}

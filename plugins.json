@@ -1,10 +1,10 @@
 [
     {
         "iconUrl": "https://www.google.com/s2/favicons?domain=sezonlukdizi.cc&sz=%size%",
-        "fileHash": "sha256-b0e53e53de6d1e4e9468ccd42b4982982e3e89cd60afbaef9de6502aced9ca27",
+        "fileHash": "sha256-4b43247fb8bceef9944dddaad8807f809615ea013b2c4399e0d5d2da513a999c",
         "apiVersion": 1,
         "repositoryUrl": "https://github.com/hashyol/cloudstream-hastr",
-        "fileSize": 28056,
+        "fileSize": 34404,
         "status": 1,
         "language": "tr",
         "authors": [
@@ -13,7 +13,7 @@
         "tvTypes": [
             "TvSeries"
         ],
-        "version": 3,
+        "version": 4,
         "internalName": "SezonlukDizi",
         "description": "SezonlukDizi.cc i\u00e7in \u00f6zel Cloudstream eklentisi.",
         "url": "https://cdn.jsdelivr.net/gh/hashyol/cloudstream-hastr@builds/SezonlukDizi.cs3",

@@ -62,6 +62,7 @@ jobs:
       - name: Push Builds
         run: |
           cd $GITHUB_WORKSPACE/builds
+          git checkout -B builds
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add .

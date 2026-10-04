@@ -256,8 +256,16 @@ class SezonlukDizi : MainAPI() {
             ?: return false
         Log.d("SezonlukDizi", "bid -> $bid")
 
-        // 1 = Altyazı, 0 = Dublaj
-        val languages = listOf("1" to "AltYazı", "0" to "Dublaj")
+        val dilButtons = document.select("div#dilsec a[data-dil]")
+        val languages = if (dilButtons.isNotEmpty()) {
+            dilButtons.mapNotNull { btn ->
+                val code = btn.attr("data-dil")
+                val name = btn.text().trim().ifEmpty { if (code == "1") "AltYazı" else "Dublaj" }
+                code to name
+            }
+        } else {
+            listOf("1" to "AltYazı", "0" to "Dublaj")
+        }
 
         for ((dilCode, dilName) in languages) {
             try {
@@ -303,17 +311,23 @@ class SezonlukDizi : MainAPI() {
                         }
                         Log.d("SezonlukDizi", "$dilName | $veriBaslik -> $iframe")
 
-                        if (iframe.contains("odnoklassniki.ru")) {
-                            val okUrl = iframe.replace("odnoklassniki.ru", "ok.ru")
-                            loadExtractor(okUrl, subtitleCallback, callback)
-                        } else if (iframe.contains("bysejikuar.com") || iframe.contains("byse")) {
-                            loadExtractor(iframe, subtitleCallback, callback)
-                            val filemoonUrl = iframe.replace(Regex("""https://[^/]+/(e|d)/"""), "https://filemoon.sx/e/")
-                            if (filemoonUrl != iframe) {
-                                loadExtractor(filemoonUrl, subtitleCallback, callback)
+                        val sourcePrefix = "[$dilName]"
+                        when {
+                            iframe.contains("vidmoly", ignoreCase = true) -> {
+                                extractVidmoly(iframe, sourcePrefix, callback)
                             }
-                        } else {
-                            loadExtractor(iframe, subtitleCallback, callback)
+                            iframe.contains("ok.ru") || iframe.contains("odnoklassniki.ru") -> {
+                                val okUrl = iframe.replace("odnoklassniki.ru", "ok.ru")
+                                extractOkru(okUrl, sourcePrefix, callback)
+                            }
+                            iframe.contains("bysejikuar.com") || iframe.contains("byse") || iframe.contains("filemoon") -> {
+                                val byseUrl = iframe.replace(Regex("""https://[^/]+/(e|d)/"""), "https://byse.sx/e/")
+                                loadExtractor(byseUrl, subtitleCallback, callback)
+                                loadExtractor(iframe, subtitleCallback, callback)
+                            }
+                            else -> {
+                                loadExtractor(iframe, subtitleCallback, callback)
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e("SezonlukDizi", "Error parsing embed $veriId: ${e.message}")
@@ -325,6 +339,152 @@ class SezonlukDizi : MainAPI() {
         }
 
         return true
+    }
+
+    private suspend fun extractVidmoly(
+        url: String,
+        prefix: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val targetUrl = if (url.contains("vidmoly.net")) {
+                url.replace("vidmoly.net", "vidmoly.biz")
+            } else {
+                url
+            }
+
+            val doc = app.get(
+                targetUrl,
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "${mainUrl}/"
+                )
+            ).text
+
+            val m3u8Match = Regex("""sources:\s*\[\s*\{\s*file:\s*['"]([^'"]+)""").find(doc)?.groupValues?.get(1)
+            if (!m3u8Match.isNullOrBlank()) {
+                val links = try {
+                    M3u8Helper.generateM3u8(
+                        source = "VidMoly",
+                        streamUrl = m3u8Match,
+                        referer = targetUrl
+                    )
+                } catch (e: Exception) {
+                    emptyList()
+                }
+
+                if (links.isNotEmpty()) {
+                    links.forEach { link ->
+                        callback(
+                            newExtractorLink(
+                                source = "VidMoly",
+                                name = "$prefix VidMoly ${link.name}",
+                                url = link.url,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.quality = link.quality
+                                this.referer = targetUrl
+                            }
+                        )
+                    }
+                } else {
+                    callback(
+                        newExtractorLink(
+                            source = "VidMoly",
+                            name = "$prefix VidMoly",
+                            url = m3u8Match,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = targetUrl
+                        }
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SezonlukDizi", "Vidmoly extraction failed: ${e.message}")
+        }
+    }
+
+    private suspend fun extractOkru(
+        url: String,
+        prefix: String,
+        callback: (ExtractorLink) -> Unit
+    ) {
+        try {
+            val html = app.get(
+                url,
+                headers = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "${mainUrl}/"
+                )
+            ).text
+
+            val optionsMatch = Regex("""data-options="([^"]+)"""").find(html)?.groupValues?.get(1)
+            if (!optionsMatch.isNullOrBlank()) {
+                val unescaped = org.jsoup.parser.Parser.unescapeEntities(optionsMatch, false)
+                val json = com.fasterxml.jackson.databind.ObjectMapper().readTree(unescaped)
+                val metadata = json.path("flashvars").path("metadata")
+                val hls = metadata.path("ondemandHls").asText(null)
+                if (!hls.isNullOrBlank()) {
+                    val links = try {
+                        M3u8Helper.generateM3u8(
+                            source = "OkRu",
+                            streamUrl = hls,
+                            referer = "https://ok.ru/"
+                        )
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
+
+                    if (links.isNotEmpty()) {
+                        links.forEach { link ->
+                            callback(
+                                newExtractorLink(
+                                    source = "OkRu",
+                                    name = "$prefix OkRu ${link.name}",
+                                    url = link.url,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.quality = link.quality
+                                    this.referer = "https://ok.ru/"
+                                }
+                            )
+                        }
+                    } else {
+                        callback(
+                            newExtractorLink(
+                                source = "OkRu",
+                                name = "$prefix OkRu",
+                                url = hls,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = "https://ok.ru/"
+                            }
+                        )
+                    }
+                }
+
+                val videos = metadata.path("videos")
+                if (videos.isArray) {
+                    for (v in videos) {
+                        val vUrl = v.path("url").asText(null) ?: continue
+                        val vName = v.path("name").asText("MP4")
+                        callback(
+                            newExtractorLink(
+                                source = "OkRu",
+                                name = "$prefix OkRu ($vName)",
+                                url = vUrl,
+                                type = ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = "https://ok.ru/"
+                            }
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SezonlukDizi", "OkRu extraction failed: ${e.message}")
+        }
     }
 
     private suspend fun getAspData(): AspData {
